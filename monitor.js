@@ -43,7 +43,7 @@ const CONFIG = {
   // Case-insensitive regex patterns — tested against each entry's title + href.
   // Covers "Summer 2026", "Summer-2026", "S-2026", "S2026", "Sum 26", etc.
   summer2026Patterns: [
-    /summer[\s\-_]?2026/i,
+    /winter[\s\-_]?2025/i,
     /\bs[\s\-]?2026\b/i,
     /\b2026\b.*\bsummer\b/i,
     /\bsum[\s\-]?26\b/i,
