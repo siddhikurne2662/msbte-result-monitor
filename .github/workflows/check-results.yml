@@ -1,0 +1,139 @@
+name: MSBTE Result Monitor
+
+on:
+  # Runs every 5 minutes. GitHub's minimum supported interval is 5 minutes.
+  schedule:
+    - cron: "*/5 * * * *"
+
+  # Manual trigger — useful for first-time testing and debugging.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (scrapes and diffs but skips email + snapshot write)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  check-results:
+    name: Check MSBTE Portal
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js 20 ────────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # ── 3. Install dependencies ───────────────────────────────────────────────
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 4. Restore snapshot ───────────────────────────────────────────────────
+      #
+      # Strategy explanation
+      # ────────────────────
+      # We never use the same key for both restore and save, because GitHub
+      # Actions cache is immutable: a key written once cannot be overwritten.
+      #
+      # Instead:
+      #   • Save key:    msbte-snapshot-v3-<run_id>   (unique per run → always saves)
+      #   • Restore key: msbte-snapshot-v3-            (prefix → picks up the latest save)
+      #
+      # On every run:
+      #   1. cache/restore looks for exact match "msbte-snapshot-v3-<run_id>" → miss (new run_id)
+      #   2. Falls back to restore-keys prefix "msbte-snapshot-v3-" → hits most recent save ✓
+      #   3. After the monitor runs, cache/save writes a new "msbte-snapshot-v3-<run_id>" entry
+      #
+      # This guarantees the freshest snapshot is always restored, and every run
+      # writes its own immutable cache entry — no races, no stale reads.
+      #
+      - name: Restore entries snapshot
+        id: restore-snapshot
+        uses: actions/cache/restore@v4
+        with:
+          path: entries-snapshot.json
+          # Exact key intentionally won't match (run_id differs) →
+          # falls through to restore-keys prefix below.
+          key: msbte-snapshot-v3-${{ github.run_id }}
+          restore-keys: |
+            msbte-snapshot-v3-
+
+      # ── 5. Log snapshot state (visible in Actions logs for debugging) ─────────
+      - name: Show snapshot state
+        run: |
+          if [ -f entries-snapshot.json ]; then
+            echo "✅ Snapshot restored:"
+            python3 - << 'PYEOF'
+          import json, sys
+          with open("entries-snapshot.json") as f:
+            d = json.load(f)
+          print(f"   Last run   : {d.get('lastRun', 'n/a')}")
+          print(f"   Known IDs  : {len(d.get('seenIds', []))}")
+          print(f"   Summer 2026: {len(d.get('latestSummer2026', []))} entries known")
+          for e in d.get("latestSummer2026", []):
+            print(f"     • {e.get('title','')[:80]}")
+          PYEOF
+          else
+            echo "ℹ️  No snapshot found — this is the first run."
+          fi
+
+      # ── 6. Run the monitor ────────────────────────────────────────────────────
+      - name: Run monitor
+        id: run-monitor
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_TO:       ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            node monitor.js --dry-run
+          else
+            node monitor.js
+          fi
+
+      # ── 7. Save snapshot ──────────────────────────────────────────────────────
+      #
+      # Saved unconditionally (if: always()) because the monitor uses a two-phase
+      # write strategy:
+      #
+      #   Phase A — written to disk before email attempt:
+      #             marks all non-Summer-2026 entries as seen.
+      #             Safe to persist even when the email step fails.
+      #
+      #   Phase B — written to disk only after email succeeds:
+      #             adds the newly-notified Summer-2026 IDs.
+      #             If email failed (exit 1), Phase B was skipped, so those IDs
+      #             are NOT in the file — the next run will detect them again
+      #             and retry the email automatically.
+      #
+      # `if: always()` ensures we save whatever the monitor left on disk,
+      # regardless of whether it exited 0 or 1.
+      #
+      - name: Save entries snapshot
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: entries-snapshot.json
+          key: msbte-snapshot-v3-${{ github.run_id }}
+
+      # ── 8. Upload snapshot as a downloadable artifact ─────────────────────────
+      # Lets you inspect the exact snapshot state after any run from the Actions UI.
+      - name: Upload snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-run-${{ github.run_number }}
+          path: entries-snapshot.json
+          if-no-files-found: ignore
+          retention-days: 14

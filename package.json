@@ -1,0 +1,23 @@
+{
+  "name": "msbte-result-monitor",
+  "version": "2.0.0",
+  "description": "Monitors the MSBTE result portal and emails when new Summer 2026 Diploma result entries appear",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js",
+    "dry-run": "node monitor.js --dry-run",
+    "test": "node monitor.js --dry-run"
+  },
+  "dependencies": {
+    "axios": "^1.17.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.4.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "resend": "^3.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
